@@ -2,15 +2,16 @@ import * as THREE from "three";
 import { useEffect, useRef } from "react";
 import { gsap } from "gsap";
 import { ScrollTrigger } from "gsap/ScrollTrigger";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 
 gsap.registerPlugin(ScrollTrigger);
 
 const DESIRED_COUNT = 3000;
-const BRAIN_SCALE = 4.2;
 const TRI_SIZE = 0.035;
 const HOVER_RADIUS = 0.55;
 const HOVER_PUSH = 0.14;
 const SHATTER_SPREAD = new THREE.Vector3(5, 5, 3);
+const RELAX_SPEED = 0.1;
 
 export default function BrainParticles() {
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -19,21 +20,23 @@ export default function BrainParticles() {
   useEffect(() => {
     if (!mountRef.current) return;
 
-    // --- Сцена и камера ---
+    // === СЦЕНА И КАМЕРА ===
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(75, innerWidth / innerHeight, 0.1, 1000);
-    camera.position.z = 3;
+    const ORBIT_RADIUS = 3;
+    camera.position.z = ORBIT_RADIUS;
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     renderer.setSize(innerWidth, innerHeight);
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     mountRef.current.appendChild(renderer.domElement);
 
+    // === СВЕТ ===
     const light = new THREE.PointLight(0xffffff, 1);
     light.position.set(2, 2, 5);
     scene.add(light);
 
-    // --- Геометрия треугольников ---
+    // === ТРЕУГОЛЬНАЯ ГЕОМЕТРИЯ ДЛЯ ЧАСТИЦ ===
     const triangleGeo = (() => {
       const geo = new THREE.BufferGeometry();
       const a = new THREE.Vector3(0, TRI_SIZE * 1.8, 0);
@@ -47,14 +50,14 @@ export default function BrainParticles() {
       return geo;
     })();
 
-    // --- Материал ---
+    // === МАТЕРИАЛ ===
     const baseMat = new THREE.MeshStandardMaterial({
       color: 0xffffff,
       metalness: 0.25,
       roughness: 0.35,
       side: THREE.DoubleSide,
       transparent: true,
-      opacity: 1, // сразу видно мозг
+      opacity: 1,
     });
 
     const mesh = new THREE.InstancedMesh(triangleGeo, baseMat, DESIRED_COUNT);
@@ -67,166 +70,150 @@ export default function BrainParticles() {
     const tempQuat = new THREE.Quaternion();
     const tempScale = new THREE.Vector3();
     const tempMat = new THREE.Matrix4();
-    const waveProgressFor = (i: number, t: number) => {
-      const factor = Math.pow((start[i].y + BRAIN_SCALE / 2) / BRAIN_SCALE, 1.5); // низ -> 0, верх -> 1
-      return THREE.MathUtils.clamp(t * 3 - factor, 0, 1);
-    };
 
-    // точка ховера (null — если нет пересечения)
     let hoverPoint: THREE.Vector3 | null = null;
-
-    // параметры возврата
-    const RELAX_SPEED = 0.12; // чем больше — тем быстрее возвращаются к базе
     const HOVER_RADIUS_SQ = HOVER_RADIUS * HOVER_RADIUS;
-    // --- Загружаем мозг ---
-    const img = new Image();
-    img.src = "/brain-map.png";
-    img.crossOrigin = "anonymous";
 
-    img.onload = () => {
-      const cvs = document.createElement("canvas");
-      const ctx = cvs.getContext("2d")!;
-      cvs.width = img.width;
-      cvs.height = img.height;
-      ctx.drawImage(img, 0, 0);
-      const pix = ctx.getImageData(0, 0, img.width, img.height).data;
+    // === ЗАГРУЗКА МОЗГА ===
+    const loader = new GLTFLoader();
+    loader.load(
+      "/brain.glb",
+      (gltf) => {
+        gltf.scene.traverse((child: any) => {
+          if (child.isMesh) {
+            const geometry = child.geometry.clone();
+            geometry.scale(1, 1, 1);
+            geometry.center();
 
-      const sample = (pix[0] + pix[1] + pix[2]) / 3;
-      const brainIsLight = sample < 128;
-      const candidates: THREE.Vector3[] = [];
-
-      for (let y = 0; y < img.height; y += 2) {
-        for (let x = 0; x < img.width; x += 2) {
-          const i = (y * img.width + x) * 4;
-          const r = pix[i], g = pix[i + 1], b = pix[i + 2];
-          const brightness = (r + g + b) / 3;
-          const isBrainPixel = brainIsLight ? brightness > 200 : brightness < 55;
-          if (isBrainPixel) {
-            const nx = (x / img.width - 0.5) * BRAIN_SCALE;
-            const ny = (0.5 - y / img.height) * BRAIN_SCALE;
-            const nz = (Math.random() - 0.5) * 0.45;
-            candidates.push(new THREE.Vector3(nx, ny, nz));
-          }
-        }
-      }
-
-      for (let i = 0; i < DESIRED_COUNT; i++) {
-        const p = candidates[(Math.random() * candidates.length) | 0] ?? new THREE.Vector3();
-        const jitter = 0.015;
-        start[i] = new THREE.Vector3(
-          p.x + (Math.random() - 0.5) * jitter,
-          p.y + (Math.random() - 0.5) * jitter,
-          p.z
-        );
-        // Чем ниже — тем раньше "взрывается"
-        const spreadFactor = THREE.MathUtils.clamp((p.y + BRAIN_SCALE / 2) / BRAIN_SCALE, 0, 1);
-        end[i] = new THREE.Vector3(
-          start[i].x + (Math.random() - 0.5) * SHATTER_SPREAD.x,
-          start[i].y + (Math.random() - 0.5) * SHATTER_SPREAD.y * spreadFactor,
-          start[i].z + (Math.random() - 0.5) * SHATTER_SPREAD.z
-        );
-      }
-
-      // --- Расставляем треугольники ---
-      for (let i = 0; i < DESIRED_COUNT; i++) {
-        tempPos.copy(start[i]);
-        tempQuat.setFromEuler(new THREE.Euler(0, 0, Math.random() * Math.PI));
-        const s = 1.0 + Math.random() * 0.7;
-        tempScale.set(s, s, 1);
-        tempMat.compose(tempPos, tempQuat, tempScale);
-        mesh.setMatrixAt(i, tempMat);
-      }
-      mesh.instanceMatrix.needsUpdate = true;
-
-      // --- Hover эффекты ---
-      const raycaster = new THREE.Raycaster();
-      const mouse = new THREE.Vector2();
-
-      const onMove = (e: MouseEvent) => {
-        mouse.x = (e.clientX / innerWidth) * 2 - 1;
-        mouse.y = -(e.clientY / innerHeight) * 2 + 1;
-        raycaster.setFromCamera(mouse, camera);
-        const hit = raycaster.intersectObject(mesh, true)[0];
-        hoverPoint = hit ? hit.point.clone() : null; // если нет попадания — считаем, что курсор "вне радиуса"
-      };
-
-renderer.domElement.addEventListener("mousemove", onMove);
-      // --- Shatter эффект снизу вверх ---
-      const proxy = { t: 0 };
-      const updateInstances = () => {
-        for (let i = 0; i < DESIRED_COUNT; i++) {
-          // база: где частица должна быть согласно скроллу (shatter-волна снизу-вверх)
-          const baseT = waveProgressFor(i, proxy.t);
-          const basePos = tempPos.lerpVectors(start[i], end[i], baseT).clone();
-
-          // достаём текущие transform инстанса
-          mesh.getMatrixAt(i, tempMat);
-          tempMat.decompose(tempPos, tempQuat, tempScale);
-
-          // если есть hover-точка и мы в радиусе — отталкиваемся
-          if (hoverPoint) {
-            const dx = tempPos.x - hoverPoint.x;
-            const dy = tempPos.y - hoverPoint.y;
-            const dz = tempPos.z - hoverPoint.z;
-            const distSq = dx * dx + dy * dy + dz * dz;
-
-            if (distSq < HOVER_RADIUS_SQ) {
-              const dist = Math.sqrt(distSq) || 1e-6;
-              const k = (1 - dist / HOVER_RADIUS) * HOVER_PUSH;
-              tempPos.x += (dx / dist) * k;
-              tempPos.y += (dy / dist) * k;
-              tempPos.z += (dz / dist) * (k * 0.6);
-            } else {
-              // вне радиуса — плавно тянем обратно к базе
-              tempPos.lerp(basePos, RELAX_SPEED);
+            const posAttr = geometry.attributes.position;
+            const verts: THREE.Vector3[] = [];
+            for (let i = 0; i < posAttr.count; i++) {
+              verts.push(new THREE.Vector3().fromBufferAttribute(posAttr, i));
             }
-          } else {
-            // ховера нет — всегда тянем к базе
-            tempPos.lerp(basePos, RELAX_SPEED);
+
+            // === СОЗДАНИЕ ЧАСТИЦ ===
+            for (let i = 0; i < DESIRED_COUNT; i++) {
+              const p = verts[(Math.random() * verts.length) | 0];
+              start[i] = p.clone();
+              const spreadFactor = (p.y + 1) / 2;
+              end[i] = p
+                .clone()
+                .add(
+                  new THREE.Vector3(
+                    (Math.random() - 0.5) * SHATTER_SPREAD.x,
+                    (Math.random() - 0.5) * SHATTER_SPREAD.y * spreadFactor,
+                    (Math.random() - 0.5) * SHATTER_SPREAD.z
+                  )
+                );
+            }
+
+            // === УСТАНОВКА НАЧАЛЬНОГО СОСТОЯНИЯ ===
+            for (let i = 0; i < DESIRED_COUNT; i++) {
+              tempPos.copy(start[i]);
+              tempQuat.setFromEuler(new THREE.Euler(0, 0, Math.random() * Math.PI));
+              const s = 1 + Math.random() * 0.7;
+              tempScale.set(s, s, 1);
+              tempMat.compose(tempPos, tempQuat, tempScale);
+              mesh.setMatrixAt(i, tempMat);
+            }
+            mesh.instanceMatrix.needsUpdate = true;
+
+            // === РЕАКЦИЯ НА МЫШЬ ===
+            const raycaster = new THREE.Raycaster();
+            const mouse = new THREE.Vector2();
+            renderer.domElement.addEventListener("mousemove", (e) => {
+              mouse.x = (e.clientX / innerWidth) * 2 - 1;
+              mouse.y = -(e.clientY / innerHeight) * 2 + 1;
+              raycaster.setFromCamera(mouse, camera);
+              const hit = raycaster.intersectObject(mesh, true)[0];
+              hoverPoint = hit ? hit.point.clone() : null;
+            });
+
+            // === SHATTER-АНИМАЦИЯ ===
+            const proxy = { t: 0 };
+            const updateInstances = () => {
+              for (let i = 0; i < DESIRED_COUNT; i++) {
+                const baseT = THREE.MathUtils.clamp(proxy.t, 0, 1);
+                const basePos = tempPos.lerpVectors(start[i], end[i], baseT).clone();
+                mesh.getMatrixAt(i, tempMat);
+                tempMat.decompose(tempPos, tempQuat, tempScale);
+
+                if (hoverPoint) {
+                  const dx = tempPos.x - hoverPoint.x;
+                  const dy = tempPos.y - hoverPoint.y;
+                  const dz = tempPos.z - hoverPoint.z;
+                  const distSq = dx * dx + dy * dy + dz * dz;
+
+                  if (distSq < HOVER_RADIUS_SQ) {
+                    const dist = Math.sqrt(distSq) || 1e-6;
+                    const k = (1 - dist / HOVER_RADIUS) * HOVER_PUSH;
+                    tempPos.x += (dx / dist) * k;
+                    tempPos.y += (dy / dist) * k;
+                    tempPos.z += (dz / dist) * (k * 0.6);
+                  } else {
+                    tempPos.lerp(basePos, RELAX_SPEED);
+                  }
+                } else {
+                  tempPos.lerp(basePos, RELAX_SPEED);
+                }
+
+                tempMat.compose(tempPos, tempQuat, tempScale);
+                mesh.setMatrixAt(i, tempMat);
+              }
+              mesh.instanceMatrix.needsUpdate = true;
+            };
+
+            // === АНИМАЦИЯ ПРИ СКРОЛЛЕ ===
+            const tl = gsap.timeline({
+              scrollTrigger: {
+                trigger: wrapRef.current,
+                start: "top top",
+                end: "+=1600",
+                scrub: 1,
+                pin: true,
+              },
+            });
+            tl.to(proxy, { t: 1, duration: 1.5, onUpdate: updateInstances });
+            tl.to(proxy, { t: 0, duration: 1.5, onUpdate: updateInstances });
+            updateInstances();
+
+            // === ДВИЖЕНИЕ КАМЕРЫ ===
+            const MAX_YAW = 0.25;
+            const MAX_PITCH = 0.15;
+            let targetYaw = 0,
+              targetPitch = 0,
+              curYaw = 0,
+              curPitch = 0;
+
+            window.addEventListener("mousemove", (e) => {
+              const ndcX = (e.clientX / innerWidth - 0.5) * 2;
+              const ndcY = (e.clientY / innerHeight - 0.5) * 2;
+              targetYaw = ndcX * MAX_YAW;
+              targetPitch = ndcY * MAX_PITCH;
+            });
+
+            const animate = () => {
+              requestAnimationFrame(animate);
+              curYaw += (targetYaw - curYaw) * 0.08;
+              curPitch += (targetPitch - curPitch) * 0.08;
+
+              const x = Math.sin(curYaw) * ORBIT_RADIUS;
+              const y = Math.sin(curPitch) * ORBIT_RADIUS * 0.2;
+              const z = Math.cos(curYaw) * ORBIT_RADIUS;
+
+              camera.position.set(x, y, z);
+              camera.lookAt(0, 0, 0);
+              light.position.copy(camera.position);
+
+              renderer.render(scene, camera);
+            };
+            animate();
           }
-
-          // небольшой твист по мере shatter-прогресса — для «искр»
-          // const twist = (baseT * Math.PI * 0.3) * (i % 2 ? 1 : -1);
-          const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(0, 0));
-          const finalQuat = tempQuat.multiply(q);
-
-          tempMat.compose(tempPos, finalQuat, tempScale);
-          mesh.setMatrixAt(i, tempMat);
-        }
-        mesh.instanceMatrix.needsUpdate = true;
-      };
-
-      const tl = gsap.timeline({
-        scrollTrigger: {
-          trigger: wrapRef.current,
-          start: "top top",
-          end: "+=1600",
-          scrub: 1,
-          pin: true,
-        },
-        defaults: { ease: "none" },
-      });
-
-      tl.to(proxy, { t: 1, duration: 1.5, onUpdate: updateInstances });
-      // tl.to(proxy, { t: 0, duration: 1.5, onUpdate: updateInstances });
-
-      // --- Камера ---
-      let targetCamX = 0;
-      const onParallax = (e: MouseEvent) => {
-        const ndcX = (e.clientX / innerWidth - 0.5) * 2;
-        targetCamX = ndcX * 1.2;
-      };
-      window.addEventListener("mousemove", onParallax);
-
-      const animate = () => {
-        requestAnimationFrame(animate);
-        camera.position.x += (targetCamX - camera.position.x) * 0.06;
-        camera.lookAt(scene.position);
-          updateInstances();
-        renderer.render(scene, camera);
-      };
-      animate();
-    };
+        });
+      },
+      undefined,
+      (err) => console.error("Ошибка загрузки brain.glb:", err)
+    );
 
     return () => {
       if (mountRef.current) mountRef.current.removeChild(renderer.domElement);

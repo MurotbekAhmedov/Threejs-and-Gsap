@@ -1,0 +1,11 @@
+Model Information:
+* title:	"the brain"
+* source:	https://sketchfab.com/3d-models/the-brain-007847f9d2b5481a882d8996c0fd1847
+* author:	veryfAtfr0G (https://sketchfab.com/veryfAtfr0G)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on ""the brain"" (https://sketchfab.com/3d-models/the-brain-007847f9d2b5481a882d8996c0fd1847) by veryfAtfr0G (https://sketchfab.com/veryfAtfr0G) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

@@ -1,3 +1,4 @@
+// BrainParticlesGpu.tsx
 import * as THREE from "three";
 import { useEffect, useRef } from "react";
 import { gsap } from "gsap";
@@ -7,12 +8,9 @@ import { MeshSurfaceSampler } from "three/examples/jsm/math/MeshSurfaceSampler.j
 
 gsap.registerPlugin(ScrollTrigger);
 
-const DESIRED_COUNT = 50000;
-const HOVER_RADIUS = 0.55;
-const HOVER_PUSH = 0.14;
-const RELAX_SPEED = 0.12;
+const PARTICLE_COUNT = 100_000;
 
-export default function BrainParticles() {
+export default function BrainParticlesGpu() {
   const wrapRef = useRef<HTMLDivElement>(null);
   const mountRef = useRef<HTMLDivElement>(null);
 
@@ -20,280 +18,276 @@ export default function BrainParticles() {
     if (!mountRef.current) return;
 
     // -----------------------------
-    // SCENE
+    // BASE SETUP
     // -----------------------------
     const scene = new THREE.Scene();
-
-    // -----------------------------
-    // CAMERA
-    // -----------------------------
     const camera = new THREE.PerspectiveCamera(
-      75,
+      70,
       innerWidth / innerHeight,
       0.1,
       2000
     );
-    const ORBIT_RADIUS = 3;
-    camera.position.set(0, 0, ORBIT_RADIUS);
+    camera.position.set(0, 0, 3);
 
-    // -----------------------------
-    // RENDERER
-    // -----------------------------
-    const renderer = new THREE.WebGLRenderer({
-      antialias: true,
-      alpha: true,
-    });
+    const renderer = new THREE.WebGLRenderer({ alpha: true });
     renderer.setSize(innerWidth, innerHeight);
     renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
     mountRef.current.appendChild(renderer.domElement);
 
-    // -----------------------------
-    // LIGHTS
-    // -----------------------------
     scene.add(new THREE.AmbientLight(0x4466ff, 0.7));
-    const hemi = new THREE.HemisphereLight(0x5aa0ff, 0x001122, 0.7);
-    scene.add(hemi);
-    const dir = new THREE.DirectionalLight(0x88ccff, 0.8);
-    dir.position.set(3, 4, 5);
-    scene.add(dir);
+    const dl = new THREE.DirectionalLight(0xffffff, 0.7);
+    dl.position.set(3, 4, 5);
+    scene.add(dl);
 
     // -----------------------------
-    // PARTICLE SPHERE
+    // BUFFERS
     // -----------------------------
-    const sphereSize = 0.009; // размер шаров
-    const sphereGeo = new THREE.SphereGeometry(1, 10, 10);
-    sphereGeo.scale(sphereSize, sphereSize, sphereSize);
+    const posBrain = new Float32Array(PARTICLE_COUNT * 3);
+    const posExplode = new Float32Array(PARTICLE_COUNT * 3);
+    const posDown = new Float32Array(PARTICLE_COUNT * 3);
+    const posBulb = new Float32Array(PARTICLE_COUNT * 3);
 
-    const baseMat = new THREE.MeshStandardMaterial({
-      metalness: 0.1,
-      roughness: 0.4,
-      vertexColors: true,
+    const colBrain = new Float32Array(PARTICLE_COUNT * 3);
+    const colExplode = new Float32Array(PARTICLE_COUNT * 3);
+    const colDown = new Float32Array(PARTICLE_COUNT * 3);
+    const colBulb = new Float32Array(PARTICLE_COUNT * 3);
+
+    const drawPos = new Float32Array(PARTICLE_COUNT * 3);
+    const drawCol = new Float32Array(PARTICLE_COUNT * 3);
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.BufferAttribute(drawPos, 3));
+    geometry.setAttribute("color", new THREE.BufferAttribute(drawCol, 3));
+
+    // -----------------------------
+    // SHADER
+    // -----------------------------
+    const material = new THREE.ShaderMaterial({
+      vertexShader: `
+        attribute vec3 color;
+        varying vec3 vColor;
+        void main(){
+          vColor = color;
+          gl_PointSize = 1.5;
+          gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        }
+      `,
+      fragmentShader: `
+        varying vec3 vColor;
+        void main(){
+          vec2 c = gl_PointCoord - vec2(0.5);
+          if(length(c) > 0.5) discard;
+          gl_FragColor = vec4(vColor, 1.0);
+        }
+      `,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
     });
 
-    const mesh = new THREE.InstancedMesh(sphereGeo, baseMat, DESIRED_COUNT);
-    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    scene.add(mesh);
+    const points = new THREE.Points(geometry, material);
+    scene.add(points);
 
     // -----------------------------
-    // ARRAYS
-    // -----------------------------
-    const start: THREE.Vector3[] = new Array(DESIRED_COUNT);
-    const end: THREE.Vector3[] = new Array(DESIRED_COUNT);
-
-    const tempPos = new THREE.Vector3();
-    const tempQuat = new THREE.Quaternion();
-    const tempScale = new THREE.Vector3(1, 1, 1);
-    const tempMat = new THREE.Matrix4();
-
-    let hoverPoint: THREE.Vector3 | null = null;
-    const HOVER_RADIUS_SQ = HOVER_RADIUS * HOVER_RADIUS;
-
-    // -----------------------------
-    // LOAD BRAIN MODEL
+    // LOAD MODELS
     // -----------------------------
     const loader = new GLTFLoader();
-    loader.load(
-      "/models/brain-new/scene.gltf",
-      (gltf) => {
-        // find mesh
-        let brainMesh: THREE.Mesh | null = null;
-        gltf.scene.traverse((child: THREE.Object3D) => {
-          if ((child as THREE.Mesh).isMesh) brainMesh = child as THREE.Mesh;
-        });
 
-        if (!brainMesh) {
-          console.error("Brain mesh not found");
-          return;
+    Promise.all([
+      loader.loadAsync("/models/brain/scene.gltf"),
+      loader.loadAsync("/models/bulb/scene.gltf"),
+    ]).then(([brainGLTF, bulbGLTF]) => {
+      let brainMesh: THREE.Mesh = null!;
+      let bulbMesh: THREE.Mesh = null!;
+
+      brainGLTF.scene.traverse((o) => {
+        if ((o as any).isMesh && !brainMesh) brainMesh = o as THREE.Mesh;
+      });
+
+      bulbGLTF.scene.traverse((o) => {
+        if ((o as any).isMesh && !bulbMesh) bulbMesh = o as THREE.Mesh;
+      });
+
+      // -----------------------------
+      // NORMALIZE geometries
+      // -----------------------------
+      const R_X = THREE.MathUtils.degToRad(270);
+      const R_Y = THREE.MathUtils.degToRad(270);
+
+      const gBrain = brainMesh.geometry.clone();
+      gBrain.center();
+      gBrain.scale(0.8, 0.8, 0.8);
+      gBrain.rotateX(R_X);
+      gBrain.rotateY(R_Y);
+      brainMesh.geometry = gBrain;
+
+      const gBulb = bulbMesh.geometry.clone();
+      gBulb.center();
+      gBulb.scale(15, 15, 15);
+      gBulb.rotateX(R_X);
+      gBulb.rotateY(R_Y);
+      bulbMesh.geometry = gBulb;
+
+      const brainSampler = new MeshSurfaceSampler(brainMesh).build();
+      const bulbSampler = new MeshSurfaceSampler(bulbMesh).build();
+
+      const p = new THREE.Vector3();
+      const n = new THREE.Vector3();
+      const b = new THREE.Vector3();
+
+      // Colors
+      const colA = new THREE.Color("#6be8ff");
+      const colB = new THREE.Color("#3388ff");
+
+      const bulA = new THREE.Color("#3388ff");
+      const bulB = new THREE.Color("#3388ff");
+
+      // -----------------------------
+      // GENERATE POINTS
+      // -----------------------------
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const I = i * 3;
+
+        // Brain
+        brainSampler.sample(p, n);
+        posBrain[I] = p.x;
+        posBrain[I + 1] = p.y + 0.55;
+        posBrain[I + 2] = p.z;
+
+        const cBrain = colA.clone().lerp(colB, Math.random());
+        colBrain[I] = cBrain.r;
+        colBrain[I + 1] = cBrain.g;
+        colBrain[I + 2] = cBrain.b;
+
+        // EXPLOSION
+        posExplode[I] = p.x + (Math.random() - 0.5) * 2.0;
+        posExplode[I + 1] = p.y + (Math.random() - 0.5) * 2.0;
+        posExplode[I + 2] = p.z + (Math.random() - 0.5) * 2.0;
+
+        const cExp = cBrain.clone().lerp(bulA, Math.random() * 0.5);
+        colExplode[I] = cExp.r;
+        colExplode[I + 1] = cExp.g;
+        colExplode[I + 2] = cExp.b;
+
+        // DOWN
+        posDown[I] = p.x * 0.3;
+        posDown[I + 1] = -2.3 - Math.random() * 0.5;
+        posDown[I + 2] = p.z * 0.3;
+
+        const cDown = cBrain.clone().lerp(bulA, 0.3);
+        colDown[I] = cDown.r;
+        colDown[I + 1] = cDown.g;
+        colDown[I + 2] = cDown.b;
+
+        // BULB
+        bulbSampler.sample(b, n);
+        posBulb[I] = b.x;
+        posBulb[I + 1] = b.y - 1.5;
+        posBulb[I + 2] = b.z;
+
+        const cBulb = bulA.clone().lerp(bulB, Math.random());
+        colBulb[I] = cBulb.r;
+        colBulb[I + 1] = cBulb.g;
+        colBulb[I + 2] = cBulb.b;
+      }
+
+      // initial = brain
+      drawPos.set(posBrain);
+      drawCol.set(colBrain);
+
+      geometry.attributes.position.needsUpdate = true;
+      geometry.attributes.color.needsUpdate = true;
+
+      // -----------------------------
+      // SCROLL MORPH (4 PHASES)
+      // -----------------------------
+      const state = { t: 0 };
+
+      const updateMorph = () => {
+        const t = state.t;
+
+        // Map scroll segments:
+        // 0.00–0.33   = brain → explode
+        // 0.33–0.66   = explode → down
+        // 0.66–1.00   = down → bulb
+
+        let k1 = 0, k2 = 0, k3 = 0;
+
+        if (t < 0.33) {
+          k1 = t / 0.33;
+        } else if (t < 0.66) {
+          k1 = 1;
+          k2 = (t - 0.33) / 0.33;
+        } else {
+          k1 = 1;
+          k2 = 1;
+          k3 = (t - 0.66) / 0.34;
         }
 
-        // clone geometry
-        const geometry = (brainMesh as THREE.Mesh).geometry.clone();
-        geometry.scale(0.02, 0.02, 0.02);
-        geometry.rotateX(30);
-        geometry.rotateY(135);
-        geometry.center();
+        for (let i = 0; i < PARTICLE_COUNT * 3; i++) {
+          let p1 = posBrain[i] + (posExplode[i] - posBrain[i]) * k1;
+          let p2 = posExplode[i] + (posDown[i] - posExplode[i]) * k2;
+          let p3 = posDown[i] + (posBulb[i] - posDown[i]) * k3;
 
-        (brainMesh as THREE.Mesh).geometry = geometry;
+          let c1 = colBrain[i] + (colExplode[i] - colBrain[i]) * k1;
+          let c2 = colExplode[i] + (colDown[i] - colExplode[i]) * k2;
+          let c3 = colDown[i] + (colBulb[i] - colDown[i]) * k3;
 
-        // -----------------------------
-        // MeshSurfaceSampler
-        // -----------------------------
-        const sampler = new MeshSurfaceSampler(brainMesh).build();
-
-        const pos = new THREE.Vector3();
-        const normal = new THREE.Vector3();
-
-        interface SamplePoint {
-          pos: THREE.Vector3;
-          depth: number;
+          drawPos[i] = t < 0.33 ? p1 : t < 0.66 ? p2 : p3;
+          drawCol[i] = t < 0.33 ? c1 : t < 0.66 ? c2 : c3;
         }
 
-        let result: SamplePoint[] = [];
-        const MAX_DEPTH = 0.08;
+        geometry.attributes.position.needsUpdate = true;
+        geometry.attributes.color.needsUpdate = true;
+      };
 
-        // генерируем точки
-        for (let i = 0; i < DESIRED_COUNT; i++) {
-          sampler.sample(pos, normal);
+      gsap.to(state, {
+        t: 1,
+        ease: "none",
+        scrollTrigger: {
+          trigger: wrapRef.current!,
+          start: "top top",
+          end: "bottom bottom",
+          scrub: true,
+          pin: true,
+        },
+        onUpdate: updateMorph,
+      });
+    });
 
-          const depth = Math.random() * MAX_DEPTH;
+    // -----------------------------
+    // CAMERA motion
+    // -----------------------------
+    const MAX_YAW = 0.25;
+    const MAX_PITCH = 0.15;
+    let ty = 0,
+      tp = 0,
+      cy = 0,
+      cp = 0;
 
-          const inner = pos.clone().addScaledVector(normal, -depth);
+    window.addEventListener("mousemove", (e) => {
+      ty = ((e.clientX / innerWidth) * 2 - 1) * MAX_YAW;
+      tp = ((e.clientY / innerHeight) * 2 - 1) * MAX_PITCH;
+    });
 
-          result.push({ pos: inner, depth });
-        }
+    const animate = () => {
+      requestAnimationFrame(animate);
+      cy += (ty - cy) * 0.08;
+      cp += (tp - cp) * 0.08;
 
-        // -----------------------------
-        // APPLY START/END + COLORS
-        // -----------------------------
-        const colors = new Float32Array(DESIRED_COUNT * 3);
+      camera.position.x = Math.sin(cy) * 3;
+      camera.position.y = Math.sin(cp) * 0.6;
+      camera.position.z = Math.cos(cy) * 3;
+      camera.lookAt(0, 0, 0);
 
-        const colorSurface = new THREE.Color(0.3, 0.65, 1.0); // голубой
-        const colorDeep = new THREE.Color(0.05, 0.1, 0.4); // темно-синий
+      renderer.render(scene, camera);
+    };
 
-        for (let i = 0; i < DESIRED_COUNT; i++) {
-          const { pos, depth } = result[i];
-          start[i] = pos.clone();
-
-          end[i] = pos
-            .clone()
-            .add(
-              new THREE.Vector3(
-                (Math.random() - 0.5) * (0.25 + depth),
-                -1.2 - depth * 3 - Math.random() * 1.4,
-                (Math.random() - 0.5) * (0.25 + depth)
-              )
-            );
-
-          // цвет
-          const t = depth / MAX_DEPTH;
-          const col = colorSurface.clone().lerp(colorDeep, t);
-
-          colors[i * 3 + 0] = col.r;
-          colors[i * 3 + 1] = col.g;
-          colors[i * 3 + 2] = col.b;
-        }
-
-        sphereGeo.setAttribute(
-          "color",
-          new THREE.InstancedBufferAttribute(colors, 3)
-        );
-
-        // -----------------------------
-        // INITIAL SHAPE
-        // -----------------------------
-        for (let i = 0; i < DESIRED_COUNT; i++) {
-          tempPos.copy(start[i]);
-          tempMat.compose(tempPos, tempQuat, tempScale);
-          mesh.setMatrixAt(i, tempMat);
-        }
-        mesh.instanceMatrix.needsUpdate = true;
-
-        // -----------------------------
-        // RAYCAST FOR HOVER
-        // -----------------------------
-        const raycaster = new THREE.Raycaster();
-        const mouse = new THREE.Vector2();
-
-        renderer.domElement.addEventListener("mousemove", (e) => {
-          mouse.x = (e.clientX / innerWidth) * 2 - 1;
-          mouse.y = -(e.clientY / innerHeight) * 2 + 1;
-          raycaster.setFromCamera(mouse, camera);
-
-          const hit = raycaster.intersectObject(mesh, true)[0];
-          hoverPoint = hit ? hit.point.clone() : null;
-        });
-
-        // -----------------------------
-        // UPDATE LOOP FOR INSTANCES
-        // -----------------------------
-        const proxy = { t: 0 };
-
-        function updateInstances() {
-          for (let i = 0; i < DESIRED_COUNT; i++) {
-            const t = proxy.t;
-
-            const basePos = start[i].clone().lerp(end[i], t);
-
-            mesh.getMatrixAt(i, tempMat);
-            tempMat.decompose(tempPos, tempQuat, tempScale);
-
-            if (hoverPoint) {
-              const dx = tempPos.x - hoverPoint.x;
-              const dy = tempPos.y - hoverPoint.y;
-              const dz = tempPos.z - hoverPoint.z;
-              const distSq = dx * dx + dy * dy + dz * dz;
-
-              if (distSq < HOVER_RADIUS_SQ) {
-                const dist = Math.sqrt(distSq) || 1e-6;
-                const k = (1 - dist / HOVER_RADIUS) * HOVER_PUSH;
-                tempPos.x += (dx / dist) * k;
-                tempPos.y += (dy / dist) * k;
-                tempPos.z += (dz / dist) * k * 0.6;
-              } else tempPos.lerp(basePos, RELAX_SPEED);
-            } else tempPos.lerp(basePos, RELAX_SPEED);
-
-            tempMat.compose(tempPos, tempQuat, tempScale);
-            mesh.setMatrixAt(i, tempMat);
-          }
-
-          mesh.instanceMatrix.needsUpdate = true;
-        }
-
-        // -----------------------------
-        // SCROLLTRIGGER
-        // -----------------------------
-        gsap
-          .timeline({
-            scrollTrigger: {
-              trigger: wrapRef.current,
-              start: "top top",
-              end: "bottom bottom",
-              scrub: 1,
-              pin: true,
-              pinSpacing: false,
-            },
-          })
-          .to(proxy, { t: 1, onUpdate: updateInstances, ease: "none" });
-
-        // -----------------------------
-        // CAMERA MOUSE LOOK
-        // -----------------------------
-        const MAX_YAW = 0.25;
-        const MAX_PITCH = 0.15;
-        let targetYaw = 0,
-          targetPitch = 0,
-          curYaw = 0,
-          curPitch = 0;
-
-        window.addEventListener("mousemove", (e) => {
-          targetYaw = ((e.clientX / innerWidth) * 2 - 1) * MAX_YAW;
-          targetPitch = ((e.clientY / innerHeight) * 2 - 1) * MAX_PITCH;
-        });
-
-        // -----------------------------
-        // ANIMATE
-        // -----------------------------
-        function animate() {
-          requestAnimationFrame(animate);
-
-          curYaw += (targetYaw - curYaw) * 0.08;
-          curPitch += (targetPitch - curPitch) * 0.08;
-
-          camera.position.x = Math.sin(curYaw) * ORBIT_RADIUS;
-          camera.position.y = Math.sin(curPitch) * ORBIT_RADIUS * 0.2;
-          camera.position.z = Math.cos(curYaw) * ORBIT_RADIUS;
-
-          camera.lookAt(0, 0, 0);
-          renderer.render(scene, camera);
-        }
-        animate();
-      },
-      undefined,
-      (err) => console.error("Load error:", err)
-    );
+    animate();
 
     return () => {
-      mountRef.current?.removeChild(renderer.domElement);
+      ScrollTrigger.getAll().forEach((t) => t.kill());
+      renderer.dispose();
     };
   }, []);
 
@@ -304,10 +298,10 @@ export default function BrainParticles() {
         style={{
           position: "fixed",
           top: 0,
+          left: 0,
           width: "100vw",
           height: "100vh",
-          overflow: "hidden",
-          background: "transparent",
+          pointerEvents: "none",
         }}
       />
     </div>

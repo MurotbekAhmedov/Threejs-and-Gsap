@@ -1,0 +1,11 @@
+Model Information:
+* title:	light bulb
+* source:	https://sketchfab.com/3d-models/light-bulb-02618a49c8e44df98fa55f2ff2661501
+* author:	White_sniper (https://sketchfab.com/White_sniper)
+
+Model License:
+* license type:	CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)
+* requirements:	Author must be credited. Commercial use is allowed.
+
+If you use this 3D model in your project be sure to copy paste this credit wherever you share it:
+This work is based on "light bulb" (https://sketchfab.com/3d-models/light-bulb-02618a49c8e44df98fa55f2ff2661501) by White_sniper (https://sketchfab.com/White_sniper) licensed under CC-BY-4.0 (http://creativecommons.org/licenses/by/4.0/)

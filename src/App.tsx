@@ -1,7 +1,7 @@
 import BrainParticles from "./components/BrainParticles";
 
 function App() {
-  return <BrainParticles />;
+  return <BrainParticles  />;
 }
 
 export default App;
